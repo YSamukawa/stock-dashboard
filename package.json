@@ -1,0 +1,15 @@
+{
+  "name": "ms-style-chart",
+  "private": true,
+  "version": "1.0.0",
+  "description": "MarketSmith-style chart app fed by public data (GitHub Actions + Pages)",
+  "scripts": {
+    "test": "node test/run.js",
+    "fetch": "node scripts/fetch.js",
+    "mock": "node scripts/mock-data.js",
+    "build": "node src/build.js",
+    "test:ui-logic": "node src/test_analytics.js"
+  },
+  "engines": { "node": ">=20" },
+  "license": "MIT"
+}

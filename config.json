@@ -1,0 +1,11 @@
+{
+  "symbols": ["AVGO", "NVDA", "GOOG", "FCX", "MU", "MSFT", "CIEN", "QQQ", "GLD", "TLT"],
+  "bench": "SPY",
+  "secSkip": ["QQQ", "GLD", "TLT"],
+  "cikOverrides": {},
+  "secUserAgent": "",
+  "insiderMonths": 12,
+  "form4MaxPerRun": 120,
+  "peYears": 5,
+  "keepBars": 2600
+}
