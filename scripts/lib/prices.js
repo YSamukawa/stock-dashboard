@@ -50,4 +50,39 @@ function parseVixCsv(text) {
   }
   return out;
 }
-module.exports = { parseStooqCsv, parseYahooChart, parseTwelveData, mergeBars, parseFredCsv, parseVixCsv };
+
+// --- US Eastern time helpers (DST: 2nd Sun of March → 1st Sun of November) ---
+function etParts(ms) {
+  const d = new Date(ms);
+  const y = d.getUTCFullYear();
+  const nthSunday = (m, n) => { const x = new Date(Date.UTC(y, m, 1)); const first = ((7 - x.getUTCDay()) % 7) + 1; return new Date(Date.UTC(y, m, first + 7 * (n - 1), 7)); };
+  const off = d >= nthSunday(2, 2) && d < nthSunday(10, 1) ? -4 : -5;
+  const et = new Date(d.getTime() + off * 3600e3);
+  return { date: et.toISOString().slice(0, 10), hour: et.getUTCHours() + et.getUTCMinutes() / 60, offset: off };
+}
+// Price sources return an in-progress bar while the US session is open. Drop it so that
+// "last close" / volume-vs-average are never computed from a partial day.
+function dropPartialBar(bars, nowMs = Date.now()) {
+  if (!bars || !bars.length) return { bars: bars || [], dropped: null };
+  const { date, hour } = etParts(nowMs);
+  const last = bars[bars.length - 1];
+  if (last.t === date && hour < 16.084) return { bars: bars.slice(0, -1), dropped: last.t };
+  return { bars, dropped: null };
+}
+// Yahoo chart JSON → [{date, ratio}] ascending. ratio = numerator/denominator (10 for a 10-for-1 split).
+function parseYahooSplits(json) {
+  const ev = json?.chart?.result?.[0]?.events?.splits || {};
+  const out = [];
+  for (const k of Object.keys(ev)) {
+    const s = ev[k] || {};
+    let ratio = null;
+    if (s.numerator > 0 && s.denominator > 0) ratio = s.numerator / s.denominator;
+    else if (typeof s.splitRatio === 'string' && s.splitRatio.includes(':')) { const [a, b] = s.splitRatio.split(':').map(Number); if (a > 0 && b > 0) ratio = a / b; }
+    if (!ratio || !isFinite(ratio) || ratio <= 0 || ratio === 1) continue;
+    const ts = s.date != null ? s.date : +k;
+    if (!isFinite(ts)) continue;
+    out.push({ date: new Date(ts * 1000).toISOString().slice(0, 10), ratio: +ratio.toFixed(6) });
+  }
+  return out.sort((a, b) => (a.date < b.date ? -1 : 1));
+}
+module.exports = { parseStooqCsv, parseYahooChart, parseTwelveData, mergeBars, parseFredCsv, parseVixCsv, etParts, dropPartialBar, parseYahooSplits };

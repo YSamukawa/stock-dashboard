@@ -110,7 +110,7 @@ function mockFetch(path, p) {
 }
 
 // ---------- state ----------
-const state = { mode: 'api', repoIndex: null, tv: { datasets: {}, snapshots: [], overlays: new Set() }, sym: null, data: {}, bench: null, tf: 'day', log: true, ind: 'none', sort: { k: 'symbol', dir: 1 }, ma: [true, true, true], rs: true, bb: false, zone: true, peb: false };
+const state = { mode: 'api', repoIndex: null, tv: { datasets: {}, snapshots: [], overlays: new Set() }, sym: null, data: {}, bench: null, tf: 'day', log: true, ind: 'none', sort: { k: 'symbol', dir: 1 }, ma: [true, true, true], rs: true, bb: false, zone: true, peb: false, bz: false, brWidth: +(LS.get('msc:brWidth', 1)) || 1 };
 // data[sym] = {bars, meta, quote, stats, earnings, fundErr, summary, rsRaw, ad, eps, base, pivot}
 
 function fmt(n, d = 2) { return n == null || isNaN(n) ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }); }
@@ -215,6 +215,7 @@ function analyze(sym) {
   d.weekly = MSA.aggregate(d.bars, 'week');
   d.base = MSA.detectBase(d.weekly);
   d.pivot = MSA.pivot(d.bars, 60);
+  d.feats = d.bars.length >= 220 ? MSB.features(d.bars, state.bench) : null; d.featsWithBench = !!state.bench;
   if (d.repo) {
     const q = d.repo.sec?.qeps || [];
     d.eps = q.length ? MSA.epsGrowth(q.map((x) => ({ date: x.end, eps_actual: x.eps }))) : null;
@@ -227,6 +228,7 @@ function analyze(sym) {
 }
 function universeRanks() {
   const syms = Object.keys(state.data).filter((s) => state.data[s].bars && s !== settings.bench.toUpperCase());
+  for (const s of syms) { const d = state.data[s]; if (d.feats && state.bench && !d.featsWithBench) { d.feats = MSB.features(d.bars, state.bench); d.featsWithBench = true; } }
   const rsU = syms.map((s) => state.data[s].rsRaw), epsU = syms.map((s) => state.data[s].eps?.raw ?? null);
   for (const s of syms) { const d = state.data[s]; d.rsPct = MSA.percentile(d.rsRaw, rsU); d.epsPct = MSA.percentile(d.eps?.raw ?? null, epsU); }
   return syms.length;
@@ -376,6 +378,10 @@ function renderChart() {
       series.pls.push(series.candle.createPriceLine({ price: pv * 1.05, color: up, lineWidth: 1, lineStyle: LW.LineStyle.Dotted, title: '+5%' }));
     }
     if (d.summary) series.pls.push(series.candle.createPriceLine({ price: d.summary.hi52, color: css('--muted'), lineWidth: 1, lineStyle: LW.LineStyle.SparseDotted, title: '52W H' }));
+    if (state.bz && d.bz) {
+      for (const c of d.bz.thick.slice(0, 3)) { series.pls.push(series.candle.createPriceLine({ price: c.high, color: css('--good'), lineWidth: 1, lineStyle: LW.LineStyle.Solid, title: `底値帯 ${c.count}件` })); if (c.high !== c.low) series.pls.push(series.candle.createPriceLine({ price: c.low, color: css('--good'), lineWidth: 1, lineStyle: LW.LineStyle.Solid, axisLabelVisible: false })); }
+      for (const l of d.bz.levels.filter((l) => !d.bz.thick.some((c) => c.items.includes(l))).slice(0, 4)) series.pls.push(series.candle.createPriceLine({ price: l.price, color: css('--good'), lineWidth: 1, lineStyle: LW.LineStyle.SparseDotted, title: l.src.split('（')[0].slice(0, 10) }));
+    }
     if (d.repo?.sec?.peBand?.band && state.peb) {
       const pb = d.repo.sec.peBand;
       for (const [k, l] of [['p25', 'PER25%'], ['p50', 'PER中央'], ['p75', 'PER75%']]) series.pls.push(series.candle.createPriceLine({ price: pb.band[k], color: css('--warn'), lineWidth: 1, lineStyle: k === 'p50' ? LW.LineStyle.Solid : LW.LineStyle.Dotted, title: l }));
@@ -477,7 +483,7 @@ function renderList() {
 }
 function baseTag(st) { const m = { buyzone: ['買いゾーン', 'good'], nearPivot: ['ピボット付近', 'good'], rightSide: ['右側形成', ''], forming: ['形成中', ''], extended: ['ゾーン超過', 'warn'], none: ['—', ''] }; const [t, c] = m[st] || ['…', '']; return `<span class="tag ${c}">${t}</span>`; }
 function renderEval() {
-  const d = state.data[state.sym]; const el = $('evalPane');
+  const d = state.data[state.sym]; const el = $('evalPane'); setTimeout(wireEval, 0);
   if (!d || !d.bars) { el.innerHTML = `<div class="sec note">${d?.err || '読込中…'}</div>`; return; }
   const b = d.base || {}, pv = b.status && b.status !== 'none' ? b : null, p = d.pivot || {};
   const adScore = { A: 90, B: 70, C: 50, D: 30, E: 10 }[d.ad?.grade] ?? null;
@@ -503,9 +509,61 @@ function renderEval() {
     <span>深さ</span><b>${fmt(pv.depthPct, 1)}% <span class="note">安値 ${fmt(pv.low)} ${pv.lowDate}</span></b><span>期間</span><b>${pv.weeks}週</b><span>損切り目安（-7%/-8%）</span><b>${fmt(pv.pivot * 0.93)} / ${fmt(pv.pivot * 0.92)}</b></div>` :
     `<div class="note">${b.reason || '—'}</div><div class="kv2" style="margin-top:6px"><span>直近60日高値（代替ピボット）</span><b>${fmt(p.pivot)}</b><span>ピボットまで</span><b class="${cls(p.toPivotPct)}">${fmtPct(p.toPivotPct, 1)}</b></div>`}
     <div class="note">週足で「左側高値→8〜50%の押し→7週以上」を満たす直近のパターンを機械的に抽出。IBD Pattern Recognitionの代替ではありません。</div></div>
-  ${tvSection(d)}${d.repo ? repoSections(d) : `<div class="sec note">データ: Twelve Data / 取得 ${new Date(LS.get(cacheKey('ts', state.sym), {}).at || 0).toLocaleString('ja-JP')}${fe.stats || fe.quote ? '<br>ファンダ取得不可: ' + [fe.quote, fe.stats].filter(Boolean).join(' / ') : ''}</div>`}`;
+  ${bottomSection(d)}${baseRateSection(d)}${tvSection(d)}${d.repo ? repoSections(d) : `<div class="sec note">データ: Twelve Data / 取得 ${new Date(LS.get(cacheKey('ts', state.sym), {}).at || 0).toLocaleString('ja-JP')}${fe.stats || fe.quote ? '<br>ファンダ取得不可: ' + [fe.quote, fe.stats].filter(Boolean).join(' / ') : ''}</div>`}`;
 }
 
+
+function bottomLevels(d) {
+  const L = []; const s = d.summary; if (!s) return L;
+  const pb = d.repo?.sec?.peBand, dd = d.repo?.drawdown, ins = d.repo?.sec?.insiders;
+  if (pb?.band) { L.push({ src: 'PER 10%点 × TTM EPS', price: pb.band.p10, kind: 'val' }); L.push({ src: 'PER 25%点 × TTM EPS', price: pb.band.p25, kind: 'val' }); }
+  if (dd && dd.count) { const pk = dd.current.peak; if (dd.median) L.push({ src: `過去下落の中央値 -${dd.median}%（高値${fmt(pk)}基準）`, price: pk * (1 - dd.median / 100), kind: 'dd' }); if (dd.p75) L.push({ src: `過去下落の75%点 -${dd.p75}%`, price: pk * (1 - dd.p75 / 100), kind: 'dd' }); if (dd.max) L.push({ src: `過去最大下落 -${dd.max}%`, price: pk * (1 - dd.max / 100), kind: 'dd' }); }
+  const closes = d.bars.map((b) => b.c); const m200 = MSA.sma(closes, 200).at(-1), m50 = MSA.sma(closes, 50).at(-1);
+  if (m200) L.push({ src: '200日移動平均', price: m200, kind: 'ta' }); if (m50) L.push({ src: '50日移動平均', price: m50, kind: 'ta' });
+  if (d.base && d.base.status !== 'none') L.push({ src: `直近ベース安値（${d.base.lowDate}）`, price: d.base.low, kind: 'ta' });
+  L.push({ src: '52週安値', price: s.lo52, kind: 'ta' });
+  if (ins?.buyers?.length) { const sh = ins.buyers.reduce((a, b) => a + b.shares, 0), val = ins.buyers.reduce((a, b) => a + b.value, 0); if (sh > 0) L.push({ src: `インサイダー買付の平均単価（${ins.buyCount}件）`, price: val / sh, kind: 'ins' }); }
+  const wk = d.weekly || []; if (wk.length > 30) { const lows = wk.slice(-52).map((w) => w.l).sort((a, b) => a - b); L.push({ src: '52週内の週足安値 25%点（下ヒゲ帯）', price: lows[Math.floor(lows.length * 0.25)], kind: 'ta' }); }
+  const out = [];
+  for (const l of L.map((x) => ({ ...x, price: +(+x.price).toFixed(2) })).filter((x) => isFinite(x.price) && x.price > 0)) { const same = out.find((o) => o.kind === l.kind && Math.abs(o.price / l.price - 1) < 0.001); if (same) same.src += ' ＝ ' + l.src; else out.push(l); }
+  return out;
+}
+function bottomSection(d) {
+  const px = d.summary?.close; if (!px) return '';
+  const lv = bottomLevels(d); const bz = MSB.bottomZone(lv, px, 0.03); d.bz = bz;
+  const kindTag = { val: 'バリュエーション', dd: '過去下落幅', ta: 'テクニカル', ins: 'インサイダー' };
+  let h = `<div class="sec"><h4>底値 参考ゾーン（予測ではなく、過去の物差しの集まり）</h4>`;
+  if (!bz.levels.length) h += '<div class="note">現値より下の参照水準がありません（データ不足または全水準が現値以上）。</div>';
+  else {
+    if (bz.thick.length) h += `<div style="margin-bottom:6px">${bz.thick.slice(0, 3).map((c) => `<span class="tag good">${fmt(c.low)}–${fmt(c.high)}（${fmtPct(c.fromPricePct, 0)}、根拠${c.count}件）</span>`).join(' ')}</div>`;
+    else h += '<div class="note" style="margin-bottom:6px">±3%以内に2件以上重なる価格帯はありません（根拠が分散）。</div>';
+    h += `<table class="eps"><tr><th>水準</th><th>現値比</th><th>根拠</th></tr>${bz.levels.map((l) => `<tr><td>${fmt(l.price)}</td><td class="neg">${fmtPct((l.price / px - 1) * 100, 1)}</td><td style="text-align:left;font-family:var(--font)">${l.src} <span class="note">${kindTag[l.kind]}</span></td></tr>`).join('')}</table>`;
+    if (bz.above.length) h += `<div class="note">現値以上のため除外: ${bz.above.map((l) => l.src.split('（')[0] + ' ' + fmt(l.price)).join(' / ')}</div>`;
+  }
+  h += `<div class="note">「ここで止まる」という予測ではありません。将来EPSの変化、市場全体の下落、個別ニュースは考慮していません。チャートの「底値帯」で重なり帯を表示できます。</div></div>`;
+  return h;
+}
+function baseRateSection(d) {
+  if (!d.feats) return `<div class="sec"><h4>急騰の過去発生率</h4><div class="note">日足が220本未満のため計算できません。</div></div>`;
+  const pool = Object.keys(state.data).filter((s) => s !== state.sym && s !== settings.bench.toUpperCase() && state.data[s].feats).map((s) => ({ sym: s, feats: state.data[s].feats }));
+  const br = MSB.baseRate(d.feats, pool, state.brWidth); d.br = br;
+  let h = `<div class="sec"><h4>急騰の過去発生率（今と似た状態の後にどうなったか）</h4>`;
+  if (!br.ok) return h + `<div class="note">${br.reason}</div></div>`;
+  h += `<div class="note">現在の状態: ${br.cur.map((c) => `${c.label} <b>${c.text}</b>`).join(' · ')}</div>
+  <div class="note" style="margin:4px 0">類似の幅 <input type="range" id="brWidth" min="0.5" max="2.5" step="0.25" value="${state.brWidth}" style="width:120px;vertical-align:middle"> ×${state.brWidth}（各指標の許容差: ${br.cur.map((c) => '±' + (c.k === 'vol' ? c.tol.toFixed(2) : c.tol.toFixed(0))).join(', ')}）</div>`;
+  const row = (label, st, unc) => st.n ? `<tr><td style="text-align:left;font-family:var(--font)">${label}</td><td>${st.n}</td><td class="${st.n < 30 ? 'neg' : ''}">${fmt(st.hit10, 0)}%${unc ? ` <span class="note">(${fmt(unc.hit10, 0)})</span>` : ''}</td><td>${fmt(st.hit20, 0)}%${unc ? ` <span class="note">(${fmt(unc.hit20, 0)})</span>` : ''}</td><td class="${cls(st.med)}">${fmtPct(st.med, 1)}</td><td>${fmtPct(st.p25, 0)} 〜 ${fmtPct(st.p75, 0)}</td><td class="neg">${fmtPct(st.min, 0)}</td></tr>` : `<tr><td style="text-align:left;font-family:var(--font)">${label}</td><td>0</td><td colspan="5" class="note">該当なし</td></tr>`;
+  h += `<table class="eps"><tr><th>母集団 / 期間</th><th>n</th><th>+10%到達</th><th>+20%到達</th><th>中央値</th><th>25〜75%</th><th>最悪</th></tr>
+    ${row(`${state.sym} 単独 / 20日`, br.own.h20, br.unconditional[20])}${row(`${state.sym} 単独 / 60日`, br.own.h60, br.unconditional[60])}
+    ${row(`リスト${br.pool.symbols}銘柄プール / 20日`, br.pool.h20)}${row(`リスト${br.pool.symbols}銘柄プール / 60日`, br.pool.h60)}</table>
+  <div class="note">「到達」= 期間内の終値の最大値が +10%/+20% 以上。括弧内は条件を付けない同銘柄の全期間ベース。n は重複する連続日を1エピソードに集約した件数で、<b>30未満は参考になりません</b>（赤字）。</div>`;
+  if (br.own.recent.length) h += `<details><summary class="note">直近の類似エピソード（${state.sym}）</summary><table class="eps"><tr><th>日付</th><th>20日後</th><th>20日内最大</th><th>60日後</th><th>60日内最大</th></tr>${br.own.recent.map((e) => `<tr><td>${e.t}</td><td class="${cls(e.ret20)}">${e.ret20 == null ? '—' : fmtPct(e.ret20, 1)}</td><td>${e.max20 == null ? '—' : fmtPct(e.max20, 1)}</td><td class="${cls(e.ret60)}">${e.ret60 == null ? '—' : fmtPct(e.ret60, 1)}</td><td>${e.max60 == null ? '—' : fmtPct(e.max60, 1)}</td></tr>`).join('')}</table></details>`;
+  const wf = MSB.walkForward(d.feats, state.brWidth, 20, 10); d.wf = wf;
+  h += `<div style="margin-top:6px"><b class="note">後出し検証（ウォークフォワード、${state.sym}単独・20日+10%）</b><div class="kv2">`;
+  if (wf.note) h += `<span class="note">${wf.note}</span><b>n=${wf.n}</b>`;
+  else h += `<span>検証点 / 無条件の到達率</span><b>${wf.n} / ${fmt(wf.baseRate, 0)}%</b><span>「到達率50%以上」と出た局面の実際の到達率</span><b>${wf.hiRealized != null ? fmt(wf.hiRealized, 0) + '%（n=' + wf.hiN + '）' : '—'}</b><span>「50%未満」と出た局面の実際の到達率</span><b>${wf.loRealized != null ? fmt(wf.loRealized, 0) + '%（n=' + wf.loN + '）' : '—'}</b><span>Brierスキル（無条件比）</span><b class="${cls(wf.skill)}">${wf.skill != null ? fmtPct(wf.skill, 0) : '—'}</b>`;
+  h += `</div><div class="note">各過去時点で「それ以前のデータだけ」で同じ計算をした結果と実際を比較。スキルが0%以下なら、この条件付けは無条件ベースより当たっていません。</div></div></div>`;
+  return h;
+}
 function tvSection(d) {
   const t = d.tv; if (!t) return '';
   const est = Object.entries(t.estHistory || {});
@@ -539,7 +597,7 @@ function repoSections(d) {
     const rows = [['p10', '10%点'], ['p25', '25%点'], ['p50', '中央値'], ['p75', '75%点'], ['p90', '90%点']];
     h += `<div class="kv2"><span>現在PER / 分布内順位</span><b>${fmt(pb.curPe, 1)}x / ${pb.percentile}%点</b><span>TTM EPS（〜${pb.ttmEnd}）</span><b>${fmt(pb.ttmEps)}</b></div>
     <table class="eps"><tr><th>分位</th><th>PER</th><th>株価帯</th><th>現値比</th></tr>${rows.map(([k, l]) => `<tr><td>${l}</td><td>${fmt(pb.pe[k], 1)}x</td><td>${fmt(pb.band[k])}</td><td class="${cls(pb.band[k] / px - 1)}">${fmtPct((pb.band[k] / px - 1) * 100, 0)}</td></tr>`).join('')}</table>
-    <div class="note">株価帯 = 現在のTTM EPS × 過去PERの分位（${pb.samples}営業日）。EPSは提出日以降にのみ反映（先読みなし）。将来EPSは考慮しない参考ゾーンです。</div>`;
+    <div class="note">株価帯 = 現在のTTM EPS × 過去PERの分位（有効${pb.samples}営業日${pb.windowDays && pb.windowDays !== pb.samples ? ' / 対象' + pb.windowDays : ''}）。EPSは初回開示日以降にのみ反映（先読みなし）、株式分割は現在の株数基準に調整済み${(r.splits || []).length ? '（' + r.splits.map((x) => x.date + ' ' + fmt(x.ratio, 0) + ':1').join(', ') + '）' : ''}。${pb.caveat ? '<br><b>' + pb.caveat + '</b>：赤字・大幅減益の時期はPERが発散して上位分位を歪めるため、分布から外しています。' : ''}将来EPSは考慮しない参考ゾーンです。</div>`;
   }
   h += '</div>';
   // drawdown
@@ -567,6 +625,7 @@ function relPerf(d, n) {
   const rel = ((a.c / b0.c) / (ba / bb) - 1) * 100;
   return `<span class="${cls(rel)}">${fmtPct(rel, 1)}</span>`;
 }
+function wireEval() { const r = $('brWidth'); if (r) r.addEventListener('change', (e) => { state.brWidth = +e.target.value; LS.set('msc:brWidth', state.brWidth); renderEval(); }); }
 function renderAll() { renderTvControls(); renderHeader(); renderChart(); renderEval(); renderList(); }
 
 // ---------- data table ----------
@@ -606,7 +665,7 @@ function wire() {
   $('btnSettings').onclick = openSettings; $('sCancel').onclick = () => $('modal').classList.remove('show'); $('sSave').onclick = saveSettings; $('sClear').onclick = clearCache;
   $('tfGrp').querySelectorAll('button').forEach((b) => (b.onclick = () => { state.tf = b.dataset.tf; $('tfGrp').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); $('swMa1').querySelector('span').textContent = state.tf === 'day' ? '21' : '10'; $('swMa2').querySelector('span').textContent = state.tf === 'day' ? '50' : '40'; $('swMa3').style.display = state.tf === 'day' ? '' : 'none'; renderChart(); }));
   $('btnLog').onclick = () => { state.log = !state.log; $('btnLog').classList.toggle('on', state.log); renderChart(); };
-  [['swMa1', (v) => (state.ma[0] = v)], ['swMa2', (v) => (state.ma[1] = v)], ['swMa3', (v) => (state.ma[2] = v)], ['swRs', (v) => (state.rs = v)], ['swBb', (v) => (state.bb = v)], ['swZone', (v) => (state.zone = v)], ['swPeb', (v) => (state.peb = v)]].forEach(([id, f]) => $(id).querySelector('input').addEventListener('change', (e) => { f(e.target.checked); renderChart(); }));
+  [['swMa1', (v) => (state.ma[0] = v)], ['swMa2', (v) => (state.ma[1] = v)], ['swMa3', (v) => (state.ma[2] = v)], ['swRs', (v) => (state.rs = v)], ['swBb', (v) => (state.bb = v)], ['swZone', (v) => (state.zone = v)], ['swPeb', (v) => (state.peb = v)], ['swBz', (v) => (state.bz = v)]].forEach(([id, f]) => $(id).querySelector('input').addEventListener('change', (e) => { f(e.target.checked); renderChart(); }));
   $('indSel').onchange = (e) => { state.ind = e.target.value; renderChart(); };
   $('btnTbl').onclick = toggleTable; $('btnFit').onclick = () => Object.values(charts).forEach((c) => c.timeScale().fitContent());
   $('btnTheme').onclick = () => { const r = document.documentElement; const cur = r.getAttribute('data-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); r.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark'); LS.set('msc:theme', r.getAttribute('data-theme')); buildCharts(); renderChart(); };

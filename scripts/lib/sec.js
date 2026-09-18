@@ -1,28 +1,45 @@
 // SEC EDGAR parsers — pure functions, no network. Tested in test/sec.test.js
 'use strict';
 
-// ---- companyfacts → quarterly diluted EPS series ----
+// ---- companyfacts → quarterly diluted EPS series (split-adjusted, point-in-time dated) ----
+// SEC facts are stored AS FILED: a period reported before a stock split keeps its pre-split EPS
+// unless a later filing restates it. Mixing those with post-split periods destroys any TTM sum,
+// so every value is divided by the splits that happened AFTER the filing it was taken from.
+// `splits`: [{date:'YYYY-MM-DD', ratio}] (ratio 10 for a 10-for-1), from prices.parseYahooSplits.
+function splitFactorAfter(splits, filed) {
+  let f = 1;
+  for (const s of splits || []) if (s.date > filed) f *= s.ratio;
+  return f;
+}
 // facts: the JSON from data.sec.gov/api/xbrl/companyfacts/CIK##########.json
-// Returns ascending [{end, start, eps, fy, fp, form, filed, derived}] with one value per quarter end.
-function quarterlyEps(facts) {
+// Returns ascending [{end, start, eps, fy, fp, form, filed, derived}], one value per quarter end,
+// where `filed` is the FIRST disclosure of that period (so a later restatement never back-dates it).
+function quarterlyEps(facts, splits = []) {
   const gaap = facts?.facts?.['us-gaap'] || {};
   const node = gaap.EarningsPerShareDiluted || gaap.EarningsPerShareBasic;
   if (!node) return [];
   const arr = node.units?.['USD/shares'] || [];
   const days = (a, b) => (new Date(b) - new Date(a)) / 86400000;
-  const q = new Map(); // end -> fact (3-month duration)
-  const annual = new Map(); // end -> fact (~12-month duration)
+  // Latest filing wins for the VALUE (most restated), earliest filing wins for the DATE (when it became known).
+  const pick = (list) => {
+    let latest = list[0], first = list[0];
+    for (const f of list) { if (f.filed > latest.filed) latest = f; if (f.filed < first.filed) first = f; }
+    return { start: latest.start, end: latest.end, val: +(latest.val / splitFactorAfter(splits, latest.filed)).toFixed(6), raw: latest.val, fy: latest.fy, fp: latest.fp, form: latest.form, filed: first.filed, valFiled: latest.filed };
+  };
+  const qRaw = {}, aRaw = {};
   for (const f of arr) {
     if (!f.start || !f.end || typeof f.val !== 'number') continue;
     const d = days(f.start, f.end);
-    if (d >= 75 && d <= 100) { const prev = q.get(f.end); if (!prev || f.filed > prev.filed) q.set(f.end, f); }
-    else if (d >= 350 && d <= 380) { const prev = annual.get(f.end); if (!prev || f.filed > prev.filed) annual.set(f.end, f); }
+    if (d >= 75 && d <= 100) (qRaw[f.end] = qRaw[f.end] || []).push(f);
+    else if (d >= 350 && d <= 380) (aRaw[f.end] = aRaw[f.end] || []).push(f);
   }
-  // derive Q4 (or any missing quarter) = annual − the three quarters inside the annual window
+  const q = new Map(); for (const e of Object.keys(qRaw)) q.set(e, pick(qRaw[e]));
+  const annual = new Map(); for (const e of Object.keys(aRaw)) annual.set(e, pick(aRaw[e]));
+  // derive the missing quarter (usually Q4) = annual − the three quarters inside the annual window
   for (const [end, a] of annual) {
     if (q.has(end)) continue;
-    const inside = [...q.values()].filter((x) => x.end > a.start && x.end < a.end && days(a.start, x.end) > 60);
-    if (inside.length === 3) q.set(end, { start: inside[2].end, end, val: +(a.val - inside.reduce((s, x) => s + x.val, 0)).toFixed(4), fy: a.fy, fp: 'Q4', form: a.form, filed: a.filed, derived: true });
+    const inside = [...q.values()].filter((x) => x.end > a.start && x.end < a.end && days(a.start, x.end) > 60).sort((x, y) => (x.end < y.end ? -1 : 1));
+    if (inside.length === 3) q.set(end, { start: inside[2].end, end, val: +(a.val - inside.reduce((s, x) => s + x.val, 0)).toFixed(4), fy: a.fy, fp: 'Q4', form: a.form, filed: a.filed, valFiled: a.valFiled, derived: true });
   }
   return [...q.values()].sort((x, y) => (x.end < y.end ? -1 : 1)).map((f) => ({ end: f.end, start: f.start, eps: f.val, fy: f.fy, fp: f.fp, form: f.form, filed: f.filed, derived: !!f.derived }));
 }
@@ -116,4 +133,4 @@ function summarizeInsiders(filings, sinceDate) {
   return { since: sinceDate, buyCount: buys.length, buyValue: +sum(buys).toFixed(0), sellCount: sells.length, sellValue: +sum(sells).toFixed(0), buyers: byOwner(buys), sellers: byOwner(sells).slice(0, 8), lastBuy: buys.map((b) => b.date).sort().pop() || null, recentBuys: buys.sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 12) };
 }
 
-module.exports = { quarterlyEps, ttmSeries, recentFilings, earningsFilings, form4Filings, reactionDate, parseForm4, summarizeInsiders };
+module.exports = { splitFactorAfter, quarterlyEps, ttmSeries, recentFilings, earningsFilings, form4Filings, reactionDate, parseForm4, summarizeInsiders };

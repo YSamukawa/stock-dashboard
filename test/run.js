@@ -113,4 +113,84 @@ assert.strictEqual(er.events.length, 2); assert(er.events[0].pending); const e0 
 assert.strictEqual(e0.prevClose, 102); assert.strictEqual(e0.reactionPct, 5.88); assert.strictEqual(e0.gapPct, 7.84); assert.strictEqual(e0.reaction5dPct, +((112 / 102 - 1) * 100).toFixed(2));
 assert.strictEqual(er.n, 1); assert.strictEqual(er.upCount, 1);
 
+// ---------- split-adjusted EPS (reproduces the real AVGO 10-for-1 case, 2024-07-15) ----------
+// Periods last restated BEFORE the split keep pre-split values; periods restated after are already adjusted.
+const SPLITS = [{ date: '2024-07-15', ratio: 10 }];
+assert.strictEqual(SEC.splitFactorAfter(SPLITS, '2023-03-08'), 10);
+assert.strictEqual(SEC.splitFactorAfter(SPLITS, '2024-09-11'), 1);
+assert.strictEqual(SEC.splitFactorAfter([{ date: '2020-01-01', ratio: 4 }, { date: '2024-07-15', ratio: 10 }], '2021-01-01'), 10);
+assert.strictEqual(SEC.splitFactorAfter([], '2020-01-01'), 1);
+const avgoFacts = { facts: { 'us-gaap': { EarningsPerShareDiluted: { units: { 'USD/shares': [
+  // pre-split filings only (value must be divided by 10)
+  { start: '2022-10-31', end: '2023-01-29', val: 8.8, fy: 2023, fp: 'Q1', form: '10-Q', filed: '2023-03-08' },
+  { start: '2022-10-31', end: '2023-01-29', val: 8.8, fy: 2024, fp: 'Q1', form: '10-Q', filed: '2024-03-14' },
+  { start: '2023-01-30', end: '2023-04-30', val: 8.15, fy: 2023, fp: 'Q2', form: '10-Q', filed: '2023-06-07' },
+  // restated after the split (already in post-split basis)
+  { start: '2023-05-01', end: '2023-07-30', val: 7.74, fy: 2023, fp: 'Q3', form: '10-Q', filed: '2023-09-06' },
+  { start: '2023-05-01', end: '2023-07-30', val: 0.77, fy: 2024, fp: 'Q3', form: '10-Q', filed: '2024-09-11' },
+  // FY2023 annual, restated post-split → Q4 is derived from it
+  { start: '2022-10-31', end: '2023-10-29', val: 32.98, fy: 2023, fp: 'FY', form: '10-K', filed: '2023-12-14' },
+  { start: '2022-10-31', end: '2023-10-29', val: 3.3, fy: 2023, fp: 'FY', form: '10-K', filed: '2024-12-20' },
+] } } } } };
+const adj = SEC.quarterlyEps(avgoFacts, SPLITS);
+const byEnd = Object.fromEntries(adj.map((x) => [x.end, x]));
+assert(Math.abs(byEnd['2023-01-29'].eps - 0.88) < 1e-6, 'pre-split Q1 rebased: ' + byEnd['2023-01-29'].eps);
+assert(Math.abs(byEnd['2023-04-30'].eps - 0.815) < 1e-6);
+assert(Math.abs(byEnd['2023-07-30'].eps - 0.77) < 1e-6, 'post-split Q3 untouched');
+// first disclosure dates the series, not the later restatement
+assert.strictEqual(byEnd['2023-01-29'].filed, '2023-03-08');
+assert.strictEqual(byEnd['2023-07-30'].filed, '2023-09-06');
+// derived Q4 = adjusted annual − the three adjusted quarters, all on one basis
+const q4 = byEnd['2023-10-29'];
+assert(q4.derived && Math.abs(q4.eps - (3.3 - (0.88 + 0.815 + 0.77))) < 1e-4, 'derived Q4 ' + JSON.stringify(q4));
+assert(q4.eps > 0 && q4.eps < 1.2, 'derived Q4 in a sane range: ' + q4.eps);
+// the whole point: a TTM sum over the four is now coherent
+const avgoTtm = SEC.ttmSeries(adj);
+assert.strictEqual(avgoTtm.length, 1);
+assert(Math.abs(avgoTtm[0].ttm - 3.3) < 1e-4, 'TTM equals the restated FY: ' + avgoTtm[0].ttm);
+// without split data the same facts produce the broken mix that shipped before this fix
+const broken = SEC.quarterlyEps(avgoFacts, []);
+const bQ4 = broken.find((x) => x.end === '2023-10-29');
+assert(bQ4.eps < -10, 'regression guard: without split data the derived quarter is absurd (' + bQ4.eps + ')');
+assert(broken.find((x) => x.end === '2023-01-29').eps === 8.8 && broken.find((x) => x.end === '2023-07-30').eps === 0.77,
+  'regression guard: pre- and post-split quarters sit side by side when unadjusted');
+
+// ---------- split parsing ----------
+assert.deepStrictEqual(PR.parseYahooSplits({ chart: { result: [{ events: { splits: {
+  '1721053800': { date: 1721053800, numerator: 10, denominator: 1, splitRatio: '10:1' },
+  '1656941400': { date: 1656941400, numerator: 20, denominator: 1, splitRatio: '20:1' },
+} } }] } }), [{ date: '2022-07-04', ratio: 20 }, { date: '2024-07-15', ratio: 10 }]);
+assert.deepStrictEqual(PR.parseYahooSplits({}), []);
+assert.strictEqual(PR.parseYahooSplits({ chart: { result: [{ events: { splits: { a: { date: 1721053800, splitRatio: '1:10' } } } }] } })[0].ratio, 0.1);
+
+// ---------- partial (in-progress) bar ----------
+const partBars = [{ t: '2026-09-17', c: 1 }, { t: '2026-09-18', c: 2 }];
+// 2026-09-18 13:54Z = 09:54 ET (EDT) → session open → last bar is partial
+assert.deepStrictEqual(PR.dropPartialBar(partBars, Date.parse('2026-09-18T13:54:00Z')).dropped, '2026-09-18');
+// 22:30Z = 18:30 ET → after the close → keep it
+assert.strictEqual(PR.dropPartialBar(partBars, Date.parse('2026-09-18T22:30:00Z')).dropped, null);
+assert.strictEqual(PR.dropPartialBar(partBars, Date.parse('2026-09-18T22:30:00Z')).bars.length, 2);
+// winter (EST): 21:30Z = 16:30 ET → after the close
+assert.strictEqual(PR.dropPartialBar([{ t: '2026-01-15' }], Date.parse('2026-01-15T21:30:00Z')).dropped, null);
+assert.strictEqual(PR.dropPartialBar([{ t: '2026-01-15' }], Date.parse('2026-01-15T18:00:00Z')).dropped, '2026-01-15');
+assert.strictEqual(PR.dropPartialBar([], Date.now()).dropped, null);
+
+// ---------- peBand excludes earnings troughs instead of letting them blow up the upper percentiles ----------
+const tBars = [], tTtm = [{ end: '2019-12-31', filed: '2020-01-02', ttm: 10 }];
+{ const d = new Date('2020-01-01T00:00:00Z');
+  while (tBars.length < 1300) { d.setUTCDate(d.getUTCDate() + 1); if (d.getUTCDay() === 0 || d.getUTCDay() === 6) continue; tBars.push({ t: d.toISOString().slice(0, 10), c: 200 }); } }
+// a 60-day collapse to EPS 0.2 in the middle of the window
+tTtm.push({ end: '2022-12-31', filed: tBars[600].t, ttm: 0.2 }, { end: '2023-03-31', filed: tBars[660].t, ttm: 10 });
+const bandT = AN.peBand(tBars, tTtm, 10);
+assert.strictEqual(bandT.excludedTrough, 60, 'trough days excluded: ' + bandT.excludedTrough);
+assert(Math.abs(bandT.pe.p90 - 20) < 0.01, 'p90 stays at the healthy-earnings P/E: ' + bandT.pe.p90);
+assert(bandT.caveat.includes('減益期'));
+const bandNo = AN.peBand(tBars, [tTtm[0]], 10);
+assert.strictEqual(bandNo.excludedTrough, 0); assert.strictEqual(bandNo.caveat, ''); assert.strictEqual(bandNo.suspect, false);
+// a band whose spread is still absurd after filtering is flagged rather than presented as precise
+const wideTtm = [{ end: '2019-12-31', filed: '2020-01-02', ttm: 10 }];
+const wideBars = tBars.map((b, i) => ({ t: b.t, c: i < 650 ? 30 : 600 }));
+const bandWide = AN.peBand(wideBars, wideTtm, 10);
+assert(bandWide.suspect && bandWide.spread > 10 && bandWide.caveat.includes('株式分割'), 'wide spread flagged: ' + JSON.stringify({ s: bandWide.spread, c: bandWide.caveat }));
+
 console.log('ALL TESTS PASSED');

@@ -3,28 +3,45 @@
 function pct(arr, p) { if (!arr.length) return null; const s = [...arr].sort((a, b) => a - b); const i = (s.length - 1) * p; const lo = Math.floor(i), hi = Math.ceil(i); return s[lo] + (s[hi] - s[lo]) * (i - lo); }
 
 // ---- P/E band: price / TTM EPS known as of each date (uses `filed` to avoid look-ahead) ----
-// bars ascending [{t,c}], ttm ascending [{end, filed, ttm}]
-function peBand(bars, ttm, years = 5) {
+// bars ascending [{t,c}], ttm ascending [{end, filed, ttm}].
+// Days where the company was in an earnings trough (TTM EPS far below its own median for the window)
+// are excluded: a near-zero denominator sends P/E to hundreds and swamps the upper percentiles.
+function peBand(bars, ttm, years = 5, opt = {}) {
   if (!bars.length || !ttm.length) return null;
+  const minRatio = opt.minTtmRatio != null ? opt.minTtmRatio : 0.35;
   const since = new Date(bars[bars.length - 1].t); since.setFullYear(since.getFullYear() - years);
   const sinceStr = since.toISOString().slice(0, 10);
-  const pes = []; let j = 0, cur = null;
-  const series = [];
+  const rows = []; let j = 0, cur = null;
   for (const b of bars) {
     while (j < ttm.length && ttm[j].filed <= b.t) { cur = ttm[j]; j++; }
-    if (!cur || cur.ttm <= 0) continue;
-    const pe = b.c / cur.ttm;
-    if (b.t >= sinceStr) { pes.push(pe); series.push({ t: b.t, pe: +pe.toFixed(2) }); }
+    if (!cur) continue;
+    if (b.t >= sinceStr) rows.push({ t: b.t, c: b.c, e: cur.ttm });
   }
   const last = bars[bars.length - 1];
   const curTtm = [...ttm].reverse().find((x) => x.filed <= last.t);
-  if (!curTtm || curTtm.ttm <= 0) return { ttmEps: curTtm?.ttm ?? null, ttmEnd: curTtm?.end ?? null, note: 'TTM EPSが0以下のためPERは算出不能', samples: pes.length };
-  if (!pes.length) return null;
+  if (!curTtm || curTtm.ttm <= 0) return { ttmEps: curTtm ? curTtm.ttm : null, ttmEnd: curTtm ? curTtm.end : null, note: 'TTM EPSが0以下のためPERは算出不能', samples: 0 };
+  const pos = rows.filter((r) => r.e > 0);
+  const medE = pos.length ? pct(pos.map((r) => r.e), 0.5) : 0;
+  const used = pos.filter((r) => r.e >= minRatio * medE);
+  const exNeg = rows.length - pos.length, exTrough = pos.length - used.length;
+  if (used.length < 60) return { ttmEps: curTtm.ttm, ttmEnd: curTtm.end, note: `PER分布を出すのに十分な期間がありません（有効${used.length}営業日）`, samples: used.length };
+  const pes = used.map((r) => r.c / r.e);
   const P = { p10: pct(pes, 0.1), p25: pct(pes, 0.25), p50: pct(pes, 0.5), p75: pct(pes, 0.75), p90: pct(pes, 0.9) };
   const curPe = last.c / curTtm.ttm;
   const rank = pes.filter((x) => x < curPe).length / pes.length;
   const band = {}; for (const k in P) band[k] = +(P[k] * curTtm.ttm).toFixed(2);
-  return { ttmEps: curTtm.ttm, ttmEnd: curTtm.end, curPe: +curPe.toFixed(2), percentile: +(rank * 100).toFixed(0), pe: Object.fromEntries(Object.entries(P).map(([k, v]) => [k, +v.toFixed(2)])), band, samples: pes.length, years, series: series.filter((_, i) => i % 5 === 0) };
+  const caveats = [];
+  if (exNeg) caveats.push(`赤字期 ${exNeg}営業日を除外`);
+  if (exTrough) caveats.push(`減益期（TTM EPSが中央値の${Math.round(minRatio * 100)}%未満）${exTrough}営業日を除外`);
+  // A spread this wide after the trough filter usually means the EPS series is still mixing
+  // pre- and post-split figures — surface it rather than presenting a band that looks precise.
+  const spread = P.p10 > 0 ? P.p90 / P.p10 : Infinity;
+  const suspect = spread > 10;
+  if (suspect) caveats.push(`PER分布の幅が異常（10%点の${spread.toFixed(0)}倍）— 株式分割の調整もれの可能性があり、この帯は信頼できません`);
+  return { ttmEps: curTtm.ttm, ttmEnd: curTtm.end, curPe: +curPe.toFixed(2), percentile: +(rank * 100).toFixed(0),
+    pe: Object.fromEntries(Object.entries(P).map(([k, v]) => [k, +v.toFixed(2)])), band,
+    samples: used.length, windowDays: rows.length, excludedNegative: exNeg, excludedTrough: exTrough, spread: +spread.toFixed(1), suspect,
+    caveat: caveats.join(' / '), years, series: used.filter((_, i) => i % 5 === 0).map((r) => ({ t: r.t, pe: +(r.c / r.e).toFixed(2) })) };
 }
 
 // ---- Drawdown episodes from running max ----

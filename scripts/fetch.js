@@ -5,7 +5,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { parseStooqCsv, parseYahooChart, parseTwelveData, mergeBars, parseFredCsv, parseVixCsv } = require('./lib/prices');
+const { parseStooqCsv, parseYahooChart, parseTwelveData, mergeBars, parseFredCsv, parseVixCsv, dropPartialBar, parseYahooSplits, etParts } = require('./lib/prices');
 const SEC = require('./lib/sec');
 const AN = require('./lib/analysis');
 
@@ -60,6 +60,16 @@ async function fetchBars(sym) {
   return { bars: [], source: null, error: tried.join(' | ') };
 }
 
+// Split history comes from Yahoo whatever the price source is: SEC EPS facts are as-filed and must be
+// re-based onto today's share count before any TTM sum or P/E is meaningful.
+async function fetchSplits(sym) {
+  try {
+    const r = await http(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=15y&interval=1mo&events=split`);
+    if (!r.ok) return { splits: [], error: 'HTTP ' + r.status };
+    return { splits: parseYahooSplits(JSON.parse(r.text)), error: null };
+  } catch (e) { return { splits: [], error: e.message }; }
+}
+
 // ---------- SEC ----------
 let tickerMap = null;
 async function cikFor(sym) {
@@ -71,8 +81,8 @@ async function cikFor(sym) {
   }
   return tickerMap[sym]?.cik || null;
 }
-async function fetchSec(sym, bars, prev) {
-  const out = { cik: null, name: prev?.sec?.name || null, qeps: [], ttm: [], peBand: null, earnings: null, insiders: null, errors: [] };
+async function fetchSec(sym, bars, prev, splits = []) {
+  const out = { cik: null, name: prev?.sec?.name || null, splits, qeps: [], ttm: [], peBand: null, earnings: null, insiders: null, errors: [] };
   if (cfg.secSkip.includes(sym)) { out.skipped = true; return out; }
   const cik = await cikFor(sym);
   if (!cik) { out.errors.push('CIK not found in company_tickers.json'); return out; }
@@ -80,7 +90,7 @@ async function fetchSec(sym, bars, prev) {
   // companyfacts → EPS
   try {
     const r = await sec(`https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`);
-    if (r.ok) { const q = SEC.quarterlyEps(JSON.parse(r.text)); out.qeps = q.slice(-24); out.ttm = SEC.ttmSeries(q); out.peBand = AN.peBand(bars, out.ttm, cfg.peYears); }
+    if (r.ok) { const q = SEC.quarterlyEps(JSON.parse(r.text), splits); out.qeps = q.slice(-24); out.ttm = SEC.ttmSeries(q); out.peBand = AN.peBand(bars, out.ttm, cfg.peYears); }
     else out.errors.push('companyfacts HTTP ' + r.status);
   } catch (e) { out.errors.push('companyfacts: ' + e.message); }
   // submissions → 8-K 2.02 + Form 4
@@ -141,14 +151,26 @@ async function fetchMacro(prev) {
     const p = await fetchBars(sym);
     let bars = prev?.bars ? prev.bars.map(([t, o, h, l, c, v]) => ({ t, o, h, l, c, v })) : [];
     if (p.bars.length) { bars = mergeBars(bars, p.bars); rec.priceSource = p.source; } else { rec.errors.push('price: ' + p.error + (bars.length ? ' (kept previous bars)' : '')); rec.priceSource = prev?.priceSource || null; }
+    const dp = dropPartialBar(bars);
+    if (dp.dropped) { bars = dp.bars; rec.partialBarDropped = dp.dropped; log('dropped in-progress bar', sym, dp.dropped); }
     bars = bars.slice(-cfg.keepBars);
     if (!bars.length) { index.symbols.push({ symbol: sym, error: rec.errors.join('; ') }); continue; }
     rec.bars = bars.map((b) => [b.t, b.o, b.h, b.l, b.c, b.v]);
     rec.lastDate = bars[bars.length - 1].t; rec.lastClose = bars[bars.length - 1].c;
     rec.drawdown = AN.drawdowns(bars, 10);
-    if (sym !== index.bench) { log('sec', sym); try { rec.sec = await fetchSec(sym, bars, prev); rec.errors.push(...rec.sec.errors.map((e) => 'sec: ' + e)); } catch (e) { rec.errors.push('sec: ' + e.message); rec.sec = prev?.sec || null; } }
+    if (sym !== index.bench && !cfg.secSkip.includes(sym)) {
+      log('splits', sym);
+      const sp = await fetchSplits(sym);
+      if (sp.error) rec.errors.push('splits: ' + sp.error + '（EPSの分割調整ができないためPER分布は出しません）');
+      rec.splits = sp.splits;
+      log('sec', sym);
+      try {
+        rec.sec = sp.error ? Object.assign(await fetchSec(sym, bars, prev, []), { peBand: { note: '分割履歴を取得できなかったためPER分布は算出していません' } }) : await fetchSec(sym, bars, prev, sp.splits);
+        rec.errors.push(...rec.sec.errors.map((e) => 'sec: ' + e));
+      } catch (e) { rec.errors.push('sec: ' + e.message); rec.sec = prev?.sec || null; }
+    } else if (sym !== index.bench) rec.sec = { skipped: true, errors: [] };
     writeJson(file, rec);
-    index.symbols.push({ symbol: sym, name: rec.sec?.name || null, lastDate: rec.lastDate, lastClose: rec.lastClose, priceSource: rec.priceSource, insiderBuys: rec.sec?.insiders?.buyCount ?? null, nextKnown: null, errors: rec.errors });
+    index.symbols.push({ symbol: sym, name: rec.sec?.name || null, lastDate: rec.lastDate, lastClose: rec.lastClose, priceSource: rec.priceSource, splits: (rec.splits || []).length, insiderBuys: rec.sec?.insiders?.buyCount ?? null, errors: rec.errors });
     log('done', sym, rec.lastDate, rec.priceSource, rec.errors.length ? rec.errors : '');
   }
   log('macro');

@@ -253,3 +253,85 @@ const MSA = (() => {
   return { parseTwelveData, aggregate, sma, ema, rsi, macd, bollinger, atr, rsLine, summary, rsRaw, percentile, adRating, epsGrowth, nextEarnings, pivot, detectBase };
 })();
 if (typeof module !== 'undefined') module.exports = MSA;
+
+// ===== Base-rate ("急騰の過去発生率") & bottom reference zone — evidence-only, no forecasting model =====
+const MSB = (() => {
+  const FEATS = [
+    { k: 'rsi', label: 'RSI(14)', tol: 10, fmt: (v) => v.toFixed(0) },
+    { k: 'dd', label: '高値からの下落率%', tol: 10, fmt: (v) => v.toFixed(0) + '%' },
+    { k: 'ma200', label: '200日線乖離%', tol: 10, fmt: (v) => (v > 0 ? '+' : '') + v.toFixed(0) + '%' },
+    { k: 'vol', label: '出来高/50日平均', tol: 0.5, fmt: (v) => v.toFixed(2) + 'x' },
+    { k: 'rs', label: 'RS線20日変化%', tol: 5, fmt: (v) => (v > 0 ? '+' : '') + v.toFixed(1) + '%' },
+  ];
+  // per-bar features + forward outcomes. bars ascending; bench optional (same dates)
+  function features(bars, bench) {
+    const closes = bars.map((b) => b.c);
+    const rsi = MSA.rsi(closes, 14), ma200 = MSA.sma(closes, 200), volMa = MSA.sma(bars.map((b) => b.v), 50);
+    const rsl = bench ? MSA.rsLine(bars, bench) : bars.map(() => null);
+    const out = []; let peak = -Infinity;
+    for (let i = 0; i < bars.length; i++) {
+      peak = Math.max(peak, bars[i].c);
+      const f = { i, t: bars[i].t, c: bars[i].c, rsi: rsi[i], dd: (1 - bars[i].c / peak) * 100, ma200: ma200[i] != null ? (bars[i].c / ma200[i] - 1) * 100 : null, vol: volMa[i] ? bars[i].v / volMa[i] : null, rs: i >= 20 && rsl[i] != null && rsl[i - 20] ? (rsl[i] / rsl[i - 20] - 1) * 100 : null };
+      f.ok = FEATS.every((x) => f[x.k] != null && isFinite(f[x.k]));
+      for (const h of [20, 60]) {
+        if (i + h < bars.length) { let mx = -Infinity; for (let j = i + 1; j <= i + h; j++) mx = Math.max(mx, bars[j].c); f['ret' + h] = (bars[i + h].c / bars[i].c - 1) * 100; f['max' + h] = (mx / bars[i].c - 1) * 100; }
+        else { f['ret' + h] = null; f['max' + h] = null; }
+      }
+      out.push(f);
+    }
+    return out;
+  }
+  function matches(hist, cur, width = 1, maxIdx = Infinity) {
+    return hist.filter((f) => f.ok && f.i < maxIdx && FEATS.every((x) => Math.abs(f[x.k] - cur[x.k]) <= x.tol * width));
+  }
+  // collapse consecutive matched bars (< gap bars apart) into episodes → first bar of each
+  function episodes(ms, gap = 10) { const out = []; let last = -Infinity, lastSym = null; for (const m of ms) { if (m.sym !== lastSym || m.i - last >= gap) out.push(m); last = m.i; lastSym = m.sym; } return out; }
+  function pct(arr, p) { if (!arr.length) return null; const s = [...arr].sort((a, b) => a - b); const i = (s.length - 1) * p; const lo = Math.floor(i), hi = Math.ceil(i); return s[lo] + (s[hi] - s[lo]) * (i - lo); }
+  function stats(eps, h) {
+    const withFwd = eps.filter((e) => e['ret' + h] != null);
+    const n = withFwd.length; if (!n) return { n: 0 };
+    const rets = withFwd.map((e) => e['ret' + h]), mxs = withFwd.map((e) => e['max' + h]);
+    return { n, hit10: mxs.filter((v) => v >= 10).length / n * 100, hit20: mxs.filter((v) => v >= 20).length / n * 100, posRate: rets.filter((v) => v > 0).length / n * 100, p25: pct(rets, 0.25), med: pct(rets, 0.5), p75: pct(rets, 0.75), min: Math.min(...rets), max: Math.max(...rets) };
+  }
+  // main: current symbol's features (own history) + pooled histories [{sym, feats}]
+  function baseRate(ownFeats, pool, width = 1) {
+    const cur = ownFeats[ownFeats.length - 1];
+    if (!cur || !cur.ok) return { ok: false, reason: '特徴量が計算できません（200日以上の日足が必要）' };
+    const ownM = episodes(matches(ownFeats.slice(0, -1), cur, width).map((f) => ({ ...f, sym: 'own' })));
+    const poolM = episodes(pool.flatMap((p) => matches(p.feats, cur, width).map((f) => ({ ...f, sym: p.sym }))));
+    const uncOwn = { 20: stats(ownFeats.filter((f) => f.ok).map((f) => ({ ...f, sym: 'own' })), 20), 60: stats(ownFeats.filter((f) => f.ok).map((f) => ({ ...f, sym: 'own' })), 60) };
+    return { ok: true, cur: FEATS.map((x) => ({ k: x.k, label: x.label, value: cur[x.k], text: x.fmt(cur[x.k]), tol: x.tol * width })), width,
+      own: { n: ownM.length, h20: stats(ownM, 20), h60: stats(ownM, 60), recent: ownM.slice(-8).reverse().map((e) => ({ t: e.t, ret20: e.ret20, max20: e.max20, ret60: e.ret60, max60: e.max60 })) },
+      pool: { n: poolM.length, symbols: [...new Set(poolM.map((m) => m.sym))].length, h20: stats(poolM, 20), h60: stats(poolM, 60) },
+      unconditional: uncOwn };
+  }
+  // walk-forward check (own history only): at each past episode t, base rate computed from data before t vs realized outcome (max20 ≥ 10%)
+  function walkForward(ownFeats, width = 1, h = 20, thr = 10, minTrain = 250) {
+    const usable = ownFeats.filter((f) => f.ok && f['max' + h] != null);
+    const pts = [];
+    for (const f of usable) {
+      if (f.i < minTrain) continue;
+      const past = episodes(matches(ownFeats.slice(0, f.i - h), f, width).map((x) => ({ ...x, sym: 'own' }))).filter((x) => x['max' + h] != null);
+      if (past.length < 5) continue;
+      const p = past.filter((x) => x['max' + h] >= thr).length / past.length;
+      pts.push({ t: f.t, p, y: f['max' + h] >= thr ? 1 : 0 });
+    }
+    const ep = episodes(pts.map((p, i) => ({ ...p, i, sym: 'own' })), 10);
+    if (ep.length < 10) return { n: ep.length, note: '検証点が10未満のため評価不能' };
+    const base = ep.reduce((s, x) => s + x.y, 0) / ep.length;
+    const brier = ep.reduce((s, x) => s + (x.p - x.y) ** 2, 0) / ep.length, brierBase = ep.reduce((s, x) => s + (base - x.y) ** 2, 0) / ep.length;
+    const hi = ep.filter((x) => x.p >= 0.5), lo = ep.filter((x) => x.p < 0.5);
+    return { n: ep.length, h, thr, baseRate: base * 100, brier, brierBase, skill: brierBase > 0 ? (1 - brier / brierBase) * 100 : null, hiN: hi.length, hiRealized: hi.length ? hi.reduce((s, x) => s + x.y, 0) / hi.length * 100 : null, loN: lo.length, loRealized: lo.length ? lo.reduce((s, x) => s + x.y, 0) / lo.length * 100 : null };
+  }
+  // bottom reference zone: collect price levels with sources, cluster within ±band
+  function bottomZone(levels, price, band = 0.03) {
+    const below = levels.filter((l) => l.price > 0 && l.price < price).sort((a, b) => b.price - a.price);
+    const clusters = [];
+    for (const l of below) { const c = clusters.find((cl) => Math.abs(cl.center / l.price - 1) <= band); if (c) { c.items.push(l); c.low = Math.min(c.low, l.price); c.high = Math.max(c.high, l.price); c.center = (c.low + c.high) / 2; } else clusters.push({ center: l.price, low: l.price, high: l.price, items: [l] }); }
+    clusters.forEach((c) => { c.count = c.items.length; c.fromPricePct = (c.center / price - 1) * 100; });
+    const thick = clusters.filter((c) => c.count >= 2).sort((a, b) => b.count - a.count || b.center - a.center);
+    return { levels: below, clusters, thick, above: levels.filter((l) => l.price >= price) };
+  }
+  return { FEATS, features, baseRate, walkForward, bottomZone, matches, episodes, stats };
+})();
+if (typeof module !== 'undefined') module.exports.MSB = MSB;
