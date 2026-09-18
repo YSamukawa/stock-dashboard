@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MS-Style Chart</title>
+<style>
+:root{
+  --bg:#f4f6fa; --panel:#ffffff; --line:#dfe3ea; --ink:#1c2230; --ink2:#5b6474; --muted:#8b93a3;
+  --accent:#2f3e9e; --up:#2b5bd7; --dn:#e0359b; --ma21:#3aa655; --ma50:#d9342b; --ma200:#1c2230; --ma10:#8a5a00;
+  --rs:#6a4fd0; --zone:rgba(43,91,215,.10); --warn:#b7791f; --good:#2e8b57; --bad:#c0392b; --chip:#eef1f7;
+  --grid:#eceff4; --font:"Segoe UI",system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif; --mono:ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#12151c; --panel:#1a1e27; --line:#2a303c; --ink:#e6e9ef; --ink2:#aeb5c2; --muted:#7d8595; --accent:#8fa3ff;
+  --up:#4f8bff; --dn:#ff5cbf; --ma21:#5ec37a; --ma50:#ff6b61; --ma200:#e6e9ef; --ma10:#e0a640; --rs:#a293ff; --zone:rgba(79,139,255,.14);
+  --chip:#242a36; --grid:#222835; }}
+:root[data-theme="dark"]{
+  --bg:#12151c; --panel:#1a1e27; --line:#2a303c; --ink:#e6e9ef; --ink2:#aeb5c2; --muted:#7d8595; --accent:#8fa3ff;
+  --up:#4f8bff; --dn:#ff5cbf; --ma21:#5ec37a; --ma50:#ff6b61; --ma200:#e6e9ef; --ma10:#e0a640; --rs:#a293ff; --zone:rgba(79,139,255,.14);
+  --chip:#242a36; --grid:#222835; }
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--font);font-size:13px}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer;background:var(--chip);border:1px solid var(--line);border-radius:6px;padding:4px 9px}
+button:hover{border-color:var(--accent)}
+button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+input,select,textarea{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:5px 8px}
+.app{display:grid;grid-template-rows:auto 1fr;height:100%}
+.top{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
+.top .brand{font-weight:700;color:var(--accent);letter-spacing:.02em}
+.top .brand small{font-weight:400;color:var(--muted);margin-left:6px}
+.top input.sym{width:150px;text-transform:uppercase;font-family:var(--mono)}
+.top .spacer{flex:1}
+.status{color:var(--muted);font-size:12px;white-space:nowrap}
+.macro{font-size:12px;color:var(--ink2);font-family:var(--mono);white-space:nowrap}.macro b{color:var(--ink)}
+.main{display:grid;grid-template-columns:400px 1fr 290px;gap:10px;padding:10px;min-height:0;overflow:hidden}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.panel h3{margin:0;padding:8px 12px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink2);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+.panel h3 .r{margin-left:auto;font-weight:400;text-transform:none;letter-spacing:0}
+.scroll{overflow:auto;min-height:0;flex:1}
+table.wl{width:100%;border-collapse:collapse;font-size:11.5px}
+table.wl th,table.wl td{padding:5px 6px;border-bottom:1px solid var(--grid);text-align:right;white-space:nowrap}
+table.wl th{position:sticky;top:0;background:var(--panel);color:var(--ink2);font-weight:600;cursor:pointer;user-select:none;text-align:right}
+table.wl th:first-child,table.wl td:first-child{text-align:left}
+table.wl tr.row{cursor:pointer}
+table.wl tr.row:hover{background:var(--chip)}
+table.wl tr.sel{background:var(--zone)}
+.sym{font-family:var(--mono);font-weight:700}
+.pos{color:var(--up)} .neg{color:var(--dn)}
+.grade{display:inline-block;min-width:20px;text-align:center;border-radius:4px;padding:1px 5px;font-weight:700;font-size:11px;color:#fff;background:var(--muted)}
+.grade.A{background:#2e8b57}.grade.B{background:#5aa46b}.grade.C{background:#c9a227}.grade.D{background:#d97a2b}.grade.E{background:#c0392b}
+.center{display:flex;flex-direction:column;min-height:0}
+.hdr{padding:8px 12px;border-bottom:1px solid var(--line);display:grid;grid-template-columns:auto 1fr auto;gap:8px 16px;align-items:start}
+.hdr .name{font-size:18px;font-weight:700}.hdr .name small{font-weight:400;color:var(--muted);font-size:12px;margin-left:8px}
+.hdr .px{font-size:22px;font-weight:700;text-align:right;font-family:var(--mono)}.hdr .px small{font-size:13px;margin-left:6px}
+.kv{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:2px 14px;font-size:12px;color:var(--ink2)}
+.kv b{color:var(--ink);font-family:var(--mono);font-weight:600}
+.tools{display:flex;gap:6px;align-items:center;padding:6px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.tools .grp{display:flex;gap:2px;background:var(--chip);border-radius:6px;padding:2px}
+.tools .grp button{border:none;background:transparent;padding:3px 8px;border-radius:4px}
+.tools .grp button.on{background:var(--accent);color:#fff}
+.tools .sw{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--ink2);cursor:pointer}
+.tools .sw i{display:inline-block;width:14px;height:3px;border-radius:2px}
+.charts{flex:1;display:grid;grid-template-rows:1fr 110px 0px;min-height:0;position:relative}
+.charts.ind{grid-template-rows:1fr 100px 130px}
+.chart{position:relative;min-height:0;border-bottom:1px solid var(--grid)}
+.chart .lbl{position:absolute;left:8px;top:6px;z-index:5;font-size:11px;color:var(--ink2);font-family:var(--mono);pointer-events:none;background:color-mix(in srgb,var(--panel) 80%,transparent);padding:2px 6px;border-radius:4px;line-height:1.5;max-width:calc(100% - 80px)}
+.chart .lbl b{color:var(--ink)}
+.right .sec{padding:10px 12px;border-bottom:1px solid var(--grid)}
+.right .sec h4{margin:0 0 6px;font-size:12px;color:var(--ink2)}
+.score{display:flex;align-items:center;gap:10px}
+.score .big{font-size:26px;font-weight:700;font-family:var(--mono)}
+.bar{flex:1;height:6px;background:var(--grid);border-radius:3px;overflow:hidden}.bar i{display:block;height:100%;background:var(--accent)}
+.note{font-size:11px;color:var(--muted);line-height:1.5}
+.kv2{display:grid;grid-template-columns:1fr auto;gap:3px 10px;font-size:12px}.kv2 b{font-family:var(--mono);font-weight:600}
+.tag{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;background:var(--chip);color:var(--ink2)}
+.tag.good{background:rgba(46,139,87,.15);color:var(--good)}.tag.warn{background:rgba(183,121,31,.15);color:var(--warn)}.tag.bad{background:rgba(192,57,43,.15);color:var(--bad)}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;z-index:50;padding:16px}
+.modal.show{display:flex}
+.modal .box{background:var(--panel);border:1px solid var(--line);border-radius:10px;width:min(640px,100%);max-height:90vh;overflow:auto;padding:16px 18px}
+.modal label{display:block;margin:10px 0 4px;font-size:12px;color:var(--ink2)}
+.modal input,.modal textarea,.modal select{width:100%}
+.modal .row{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+.drop{border:2px dashed var(--line);border-radius:8px;padding:16px;text-align:center;margin-top:10px}.drop.over{border-color:var(--accent);background:var(--zone)}
+.modal h4{font-size:12px;color:var(--ink2)}
+.foot{padding:4px 12px;font-size:11px;color:var(--muted);border-top:1px solid var(--line);display:flex;gap:12px;flex-wrap:wrap}
+.foot a{color:var(--muted)}
+.err{color:var(--bad);font-size:12px;padding:6px 12px}
+.eps{width:100%;border-collapse:collapse;font-size:11px}.eps td,.eps th{padding:2px 4px;border-bottom:1px solid var(--grid);text-align:right;font-family:var(--mono)}.eps th{color:var(--ink2);font-family:var(--font)}
+.eps td:first-child,.eps th:first-child{text-align:left}
+.datatbl{position:absolute;inset:0;background:var(--panel);z-index:6;overflow:auto;display:none}.datatbl.show{display:block}
+.datatbl table{width:100%;border-collapse:collapse;font-size:12px;font-family:var(--mono)}.datatbl td,.datatbl th{padding:3px 8px;border-bottom:1px solid var(--grid);text-align:right}.datatbl th{position:sticky;top:0;background:var(--panel)}
+@media (max-width:1300px){ .main{grid-template-columns:340px 1fr 270px} }
+@media (max-width:1100px){
+  html,body{height:auto} .app{height:auto}
+  .main{grid-template-columns:1fr;grid-template-rows:auto auto auto;overflow:visible}
+  .panel.left .scroll{max-height:260px}.center{height:auto}.charts{height:540px}.right .scroll{overflow:visible}
+  .charts{min-height:420px}
+}
+@media (max-width:600px){ .top input.sym{width:110px} .hdr{grid-template-columns:1fr auto} .hdr .kv{grid-column:1/-1} }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="top">
+    <span class="brand">MS-Style Chart<small>public-data edition</small></span>
+    <input class="sym" id="symInput" placeholder="Symbol (例: NVDA)" autocomplete="off">
+    <button id="btnGo">表示</button>
+    <button id="btnAdd" title="ウォッチリストに追加">＋リスト</button>
+    <span class="macro" id="macro"></span>
+    <span class="spacer"></span>
+    <span class="status" id="status">—</span>
+    <button id="btnTv" title="TradingViewのCSVをこの端末に取り込む">TV取込</button>
+    <button id="btnRefresh" title="キャッシュを無視して再取得">更新</button>
+    <button id="btnTheme" title="テーマ切替">◐</button>
+    <button id="btnSettings">設定</button>
+  </div>
+  <div class="main">
+    <div class="panel left">
+      <h3>ウォッチリスト <span class="r" id="wlCount"></span></h3>
+      <div class="scroll"><table class="wl" id="wl"><thead><tr>
+        <th data-k="symbol">銘柄</th><th data-k="close">株価</th><th data-k="changePct">変化%</th><th data-k="fromHi52Pct">52週高値比</th><th data-k="volRatePct">出来高/50日</th><th data-k="rs" title="近似RS(1-99, リスト内百分位)">RS*</th><th data-k="eps" title="直近四半期EPS成長 YoY%">EPS成長*</th><th data-k="ad" title="近似A/D">A/D*</th><th data-k="base">ベース*</th>
+      </tr></thead><tbody></tbody></table></div>
+      <div class="note" style="padding:6px 12px">* はIBD公式値ではなく本アプリの近似（公開データから算出）。</div>
+    </div>
+    <div class="panel center">
+      <div class="hdr">
+        <div class="name" id="hName">—</div>
+        <div class="kv" id="hKv"></div>
+        <div class="px" id="hPx">—</div>
+      </div>
+      <div class="tools">
+        <div class="grp" id="tfGrp"><button data-tf="day" class="on">Daily</button><button data-tf="week">Weekly</button><button data-tf="month">Monthly</button></div>
+        <button id="btnLog" class="on" title="対数スケール">LOG</button>
+        <label class="sw" id="swMa1"><input type="checkbox" checked><i style="background:var(--ma21)"></i><span>21</span></label>
+        <label class="sw" id="swMa2"><input type="checkbox" checked><i style="background:var(--ma50)"></i><span>50</span></label>
+        <label class="sw" id="swMa3"><input type="checkbox" checked><i style="background:var(--ma200)"></i><span>200</span></label>
+        <label class="sw" id="swRs"><input type="checkbox" checked><i style="background:var(--rs)"></i><span>RSライン</span></label>
+        <label class="sw" id="swBb"><input type="checkbox"><i style="background:var(--muted)"></i><span>BB(20,2)</span></label>
+        <label class="sw" id="swPeb"><input type="checkbox"><i style="background:var(--warn)"></i><span>PER帯</span></label>
+        <label class="sw" id="swZone"><input type="checkbox" checked><i style="background:var(--zone);border:1px solid var(--up)"></i><span>ピボット/買いゾーン</span></label>
+        <span id="tvChips" style="display:contents"></span>
+        <select id="indSel"><option value="none">下段: なし</option><option value="rsi">RSI(14)</option><option value="macd">MACD(12,26,9)</option><option value="atr">ATR(14)</option></select>
+        <button id="btnTbl" title="データ表">表</button>
+        <button id="btnFit" title="全期間">⇔</button>
+      </div>
+      <div class="err" id="err" style="display:none"></div>
+      <div class="charts" id="charts">
+        <div class="chart" id="cPrice"><div class="lbl" id="lPrice"></div><div class="datatbl" id="dataTbl"></div></div>
+        <div class="chart" id="cVol"><div class="lbl" id="lVol"></div></div>
+        <div class="chart" id="cInd"><div class="lbl" id="lInd"></div></div>
+      </div>
+      <div class="foot"><span id="footData">データ: Twelve Data（遅延・EODの可能性あり）</span><span>Charts: <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView Lightweight Charts™</a> (Apache-2.0)</span><span>投資判断は自己責任で。</span></div>
+    </div>
+    <div class="panel right">
+      <h3>評価（近似）<span class="r note">IBD公式値ではありません</span></h3>
+      <div class="scroll" id="evalPane"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modal"><div class="box">
+  <h3 style="margin:0 0 4px">設定</h3>
+  <div class="note">データはブラウザから <b>Twelve Data</b> API を直接呼び出します（無料プラン: 8クレジット/分・800/日）。キーは <a href="https://twelvedata.com/pricing" target="_blank" rel="noopener">twelvedata.com</a> で無料登録して取得し、このブラウザの localStorage にのみ保存されます。<br>APIキーに <code>MOCK</code> と入力すると合成データでUIを試せます。</div>
+  <label>データ元</label><select id="sSrc"><option value="auto">自動（data/ があればリポジトリ、なければAPI直接）</option><option value="repo">リポジトリ（GitHub Actionsが生成した data/*.json）</option><option value="api">API直接（Twelve Data）</option></select>
+  <label>Twelve Data APIキー（API直接モードのみ）</label><input id="sApi" placeholder="xxxxxxxxxxxxxxxxxxxx">
+  <label>ウォッチリスト（カンマ・改行区切り）</label><textarea id="sSyms" rows="3"></textarea>
+  <label>ベンチマーク（RSライン用）</label><input id="sBench" placeholder="SPY">
+  <label>取得本数（日足, 1リクエスト=1クレジット）</label><select id="sOut"><option value="500">500本（約2年）</option><option value="1000" selected>1000本（約4年）</option><option value="2500">2500本（約10年）</option></select>
+  <label><input type="checkbox" id="sFund" style="width:auto;margin-right:6px">ファンダメンタルも取得（quote / statistics / earnings：銘柄あたり最大3クレジット、7日キャッシュ。無料プランで拒否された場合は自動で「N/A」表示）</label>
+  <label>時系列キャッシュの有効期間（時間）</label><input id="sTtl" type="number" min="1" value="12">
+  <div class="note" style="margin-top:8px">目安: 10銘柄+ベンチマークの時系列で11クレジット。ファンダ込みで約41クレジット（分あたり上限のため初回は数分かかります）。</div>
+  <div class="row"><button id="sClear">キャッシュ消去</button><span class="spacer" style="flex:1"></span><button id="sCancel">閉じる</button><button class="primary" id="sSave">保存して読み込み</button></div>
+</div></div>
+
+<script>/*LWC*/{{LWC}}</script>
+<div class="modal" id="tvModal"><div class="box">
+  <h3 style="margin:0 0 4px">TradingView CSV 取込（ローカルのみ）</h3>
+  <div class="note">TradingViewの「チャートデータをエクスポート」で保存したCSV（<code>time,open,high,low,close,…</code>）を取り込みます。データは<b>このブラウザのIndexedDBにだけ</b>保存され、GitHubにも外部にも送信されません。ファイル名 <code>BATS_AVGO, 1D_xxxx.csv</code> から銘柄を自動判定します。</div>
+  <div id="tvDrop" class="drop"><div>ここにCSVをドロップ、または <label class="tag" style="cursor:pointer">ファイルを選択<input type="file" id="tvFile" accept=".csv,text/csv" multiple style="display:none"></label></div>
+    <div class="note" style="margin-top:6px">銘柄を手動指定（1ファイルのとき）: <input id="tvSym" placeholder="例: AVGO" style="width:100px;text-transform:uppercase"></div></div>
+  <div id="tvLog" class="note" style="margin:8px 0"></div>
+  <label><input type="checkbox" id="tvPriority" style="width:auto;margin-right:6px">重複する日付はTradingViewの株価で上書きする（推奨。分割・配当調整済みの値を優先）</label>
+  <h4 style="margin:12px 0 4px">取込済みデータ</h4><div id="tvList"></div>
+  <h4 style="margin:12px 0 4px">推定値スナップショット（修正方向の記録）</h4><div id="tvSnaps"></div>
+  <div class="row"><button id="tvClose">閉じる</button></div>
+</div></div>
+<script>{{ANALYTICS}}</script>
+<script>{{TV}}</script>
+<script>
+{{APP}}
+</script>
+</body>
+</html>

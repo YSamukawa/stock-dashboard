@@ -1,0 +1,27 @@
+const TV = require('./tv.js'); const assert = require('assert'); const fs = require('fs');
+const text = fs.readFileSync(require('path').join(__dirname, 'fixtures', 'BATS_AVGO, 1D_sample.csv'), 'utf8');
+const p = TV.parse(text);
+assert.strictEqual(p.rows.length, 654); assert.strictEqual(p.tf, '1D');
+assert.strictEqual(p.rows[0].t, '2024-02-09');
+assert(p.rows[653].c > 0 && p.rows[653].v > 0);
+assert(p.columns.some((c) => c.key === 'MA200#2'), 'duplicate header suffixed');
+assert.strictEqual(p.rows[0].x['Upper Bollinger Band'], null);
+
+const cls = TV.classify(p);
+const kinds = Object.fromEntries(cls.map((c) => [c.key, c.kind]));
+assert.strictEqual(kinds['ema50'], 'overlay'); assert.strictEqual(kinds['RSI'], 'pane'); assert.strictEqual(kinds['MACD'], 'pane');
+assert.strictEqual(kinds['EPS Estimate FQ'], 'estimate'); assert.strictEqual(kinds['Upper Bollinger Band'], 'skip'); assert.strictEqual(kinds['MA200#2'], 'overlay');
+assert.deepStrictEqual(TV.guessSymbol('BATS_AVGO, 1D_b9f1a.csv'), { symbol: 'AVGO', tf: '1D' });
+assert.deepStrictEqual(TV.guessSymbol('NASDAQ_NVDA, 1W.csv'), { symbol: 'NVDA', tf: '1W' });
+assert.deepStrictEqual(TV.guessSymbol('BATS_AVGO 1D_b9f1a.csv'), { symbol: 'AVGO', tf: '1D' });
+assert.deepStrictEqual(TV.guessSymbol('b68945d7-BATS_AVGO_1D_b9f1a.csv'), { symbol: 'AVGO', tf: '1D' });
+assert.deepStrictEqual(TV.guessSymbol('NYSE_BRK.B, 1D.csv'), { symbol: 'BRK.B', tf: '1D' });
+assert.deepStrictEqual(TV.guessSymbol('random.csv'), { symbol: '', tf: '' });
+const eh = TV.estimateHistory(p);
+assert.strictEqual(eh['EPS Estimate FQ'].length, 11); assert.strictEqual(eh['EPS Estimate FY'].length, 3);
+const le = TV.latestEstimates(p); assert.strictEqual(le.asOf, p.rows[653].t); assert.strictEqual(le.values['EPS Estimate FY'], 6);
+const merged = TV.mergeBars([{ t: '2020-01-02', c: 1 }, { t: p.rows[653].t, c: 999 }], p.rows); assert.strictEqual(merged.length, 655); assert.strictEqual(merged[654].c, p.rows[653].c);
+const rv = TV.revisions([{ uploadedAt: '2026-09-01', asOf: '2026-08-29', values: { 'EPS Estimate FY': 6.5 } }, { uploadedAt: '2026-09-18', asOf: '2026-09-17', values: { 'EPS Estimate FY': 6.748248 } }]);
+assert(Math.abs(rv[0].deltaPct['EPS Estimate FY'] - (6.748248 / 6.5 - 1) * 100) < 1e-9); assert.strictEqual(rv[1].deltaPct['EPS Estimate FY'], null);
+assert.throws(() => TV.parse('Date,Open\n2020,1'));
+console.log('TV TESTS PASSED', p.columns.map((c) => c.key + ':' + kinds[c.key]).join(', '));
