@@ -139,9 +139,33 @@ async function fetchMacro(prev) {
   return m;
 }
 
+// ---------- health ----------
+// Stale-but-green is the dangerous failure mode for an unattended daily job: the page keeps
+// showing numbers while nothing behind it updates. Turn that into a red run instead.
+function healthCheck(index, priceFailures, total, nowMs = Date.now(), maxStaleDays = 5) {
+  const problems = [], warnings = [];
+  if (priceFailures.length) {
+    const msg = `株価を取得できなかった銘柄 ${priceFailures.length}/${total}: ${priceFailures.join(', ')}`;
+    (priceFailures.length >= Math.ceil(total / 3) ? problems : warnings).push(msg);
+  }
+  const dates = index.symbols.map((s) => s.lastDate).filter(Boolean).sort();
+  const newest = dates[dates.length - 1] || null;
+  if (!newest) problems.push('どの銘柄も株価データがありません');
+  else {
+    const ageDays = Math.floor((nowMs - Date.parse(newest + 'T00:00:00Z')) / 86400000);
+    if (ageDays > maxStaleDays) problems.push(`最新の株価が ${newest}（${ageDays}日前）で古すぎます`);
+    const behind = index.symbols.filter((s) => s.lastDate && s.lastDate < newest);
+    if (behind.length) warnings.push(`他より古い銘柄: ${behind.map((s) => s.symbol + '(' + s.lastDate + ')').join(', ')}`);
+  }
+  const macroErr = (index.macro && index.macro.errors) || [];
+  if (macroErr.length) warnings.push('マクロ: ' + macroErr.join('; '));
+  return { ok: problems.length === 0, checkedAt: new Date(nowMs).toISOString(), newestBar: newest, priceFailures, problems, warnings };
+}
+
 // ---------- main ----------
-(async () => {
+if (require.main === module) (async () => {
   const symbols = [...new Set([cfg.bench, ...cfg.symbols].map((s) => s.toUpperCase()))];
+  const priceFailures = [];
   const index = { updatedAt: new Date().toISOString(), bench: cfg.bench.toUpperCase(), symbols: [], errors: [] };
   for (const sym of symbols) {
     const file = path.join(DATA, sym + '.json');
@@ -150,7 +174,7 @@ async function fetchMacro(prev) {
     log('price', sym);
     const p = await fetchBars(sym);
     let bars = prev?.bars ? prev.bars.map(([t, o, h, l, c, v]) => ({ t, o, h, l, c, v })) : [];
-    if (p.bars.length) { bars = mergeBars(bars, p.bars); rec.priceSource = p.source; } else { rec.errors.push('price: ' + p.error + (bars.length ? ' (kept previous bars)' : '')); rec.priceSource = prev?.priceSource || null; }
+    if (p.bars.length) { bars = mergeBars(bars, p.bars); rec.priceSource = p.source; rec.priceFresh = true; } else { rec.errors.push('price: ' + p.error + (bars.length ? ' (kept previous bars)' : '')); rec.priceSource = prev?.priceSource || null; rec.priceFresh = false; priceFailures.push(sym); }
     const dp = dropPartialBar(bars);
     if (dp.dropped) { bars = dp.bars; rec.partialBarDropped = dp.dropped; log('dropped in-progress bar', sym, dp.dropped); }
     bars = bars.slice(-cfg.keepBars);
@@ -170,13 +194,20 @@ async function fetchMacro(prev) {
       } catch (e) { rec.errors.push('sec: ' + e.message); rec.sec = prev?.sec || null; }
     } else if (sym !== index.bench) rec.sec = { skipped: true, errors: [] };
     writeJson(file, rec);
-    index.symbols.push({ symbol: sym, name: rec.sec?.name || null, lastDate: rec.lastDate, lastClose: rec.lastClose, priceSource: rec.priceSource, splits: (rec.splits || []).length, insiderBuys: rec.sec?.insiders?.buyCount ?? null, errors: rec.errors });
+    index.symbols.push({ symbol: sym, name: rec.sec?.name || null, lastDate: rec.lastDate, lastClose: rec.lastClose, priceSource: rec.priceSource, priceFresh: rec.priceFresh, splits: (rec.splits || []).length, insiderBuys: rec.sec?.insiders?.buyCount ?? null, errors: rec.errors });
     log('done', sym, rec.lastDate, rec.priceSource, rec.errors.length ? rec.errors : '');
   }
   log('macro');
   const macro = await fetchMacro(readJson(path.join(DATA, 'macro.json'), null));
   writeJson(path.join(DATA, 'macro.json'), macro);
   index.macro = { dgs10: macro.dgs10.slice(-1)[0] || null, dgs2: macro.dgs2.slice(-1)[0] || null, vix: macro.vix.slice(-1)[0] || null, errors: macro.errors };
+  // Health check — the data is already written, so a partial day still gets committed and shown.
+  // Failing the job afterwards is what makes a silent outage visible (GitHub emails a red run).
+  const health = healthCheck(index, priceFailures, symbols.length);
+  index.health = health;
   writeJson(path.join(DATA, 'index.json'), index);
   log('finished', index.symbols.length, 'symbols');
+  if (!health.ok) { console.error('HEALTH CHECK FAILED: ' + health.problems.join(' / ')); process.exit(1); }
+  if (health.warnings.length) log('warnings:', health.warnings.join(' / '));
 })().catch((e) => { console.error(e); process.exit(1); });
+module.exports = { healthCheck };

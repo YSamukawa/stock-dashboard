@@ -4,6 +4,7 @@ const assert = require('assert');
 const SEC = require('../scripts/lib/sec');
 const AN = require('../scripts/lib/analysis');
 const PR = require('../scripts/lib/prices');
+const FETCH = require('../scripts/fetch');
 
 // ---------- companyfacts fixture (fiscal year = calendar year; Q4 only via annual) ----------
 const epsFacts = [];
@@ -191,6 +192,36 @@ assert.strictEqual(bandNo.excludedTrough, 0); assert.strictEqual(bandNo.caveat, 
 const wideTtm = [{ end: '2019-12-31', filed: '2020-01-02', ttm: 10 }];
 const wideBars = tBars.map((b, i) => ({ t: b.t, c: i < 650 ? 30 : 600 }));
 const bandWide = AN.peBand(wideBars, wideTtm, 10);
-assert(bandWide.suspect && bandWide.spread > 10 && bandWide.caveat.includes('株式分割'), 'wide spread flagged: ' + JSON.stringify({ s: bandWide.spread, c: bandWide.caveat }));
+assert(bandWide.suspect && bandWide.spread > 10 && bandWide.caveat.includes('価格の目安になりません'), 'wide spread flagged: ' + JSON.stringify({ s: bandWide.spread, c: bandWide.caveat }));
+// the warning must state the measured cause (the EPS swing), never blame a stock split it cannot see
+assert(!bandWide.caveat.includes('株式分割'), 'no unfounded split blame');
+assert(bandWide.ttmLow === 10 && bandWide.ttmHigh === 10, 'EPS range reported: ' + JSON.stringify([bandWide.ttmLow, bandWide.ttmHigh]));
+
+// ---------- health check: stale-but-green is the failure mode this guards against ----------
+const NOW = Date.parse('2026-09-19T12:00:00Z');
+const mkIndex = (lastDate, n = 11) => ({ symbols: Array.from({ length: n }, (_, i) => ({ symbol: 'S' + i, lastDate })), macro: { errors: [] } });
+const okRun = FETCH.healthCheck(mkIndex('2026-09-18'), [], 11, NOW);
+assert(okRun.ok && !okRun.problems.length && !okRun.warnings.length, JSON.stringify(okRun));
+assert.strictEqual(okRun.newestBar, '2026-09-18');
+// a few price failures are a warning, not a failure — the previous bars still carry the page
+const few = FETCH.healthCheck(mkIndex('2026-09-18'), ['AVGO'], 11, NOW);
+assert(few.ok && few.warnings.length === 1 && !few.problems.length, JSON.stringify(few));
+// a third of the list failing is a real outage → red run
+const many = FETCH.healthCheck(mkIndex('2026-09-18'), ['A', 'B', 'C', 'D'], 11, NOW);
+assert(!many.ok && many.problems[0].includes('4/11'), JSON.stringify(many));
+// data that quietly stopped advancing → red run
+const stale = FETCH.healthCheck(mkIndex('2026-09-10'), [], 11, NOW);
+assert(!stale.ok && stale.problems.some((p) => p.includes('古すぎます')), JSON.stringify(stale));
+assert(FETCH.healthCheck(mkIndex('2026-09-14'), [], 11, NOW).ok, 'a long weekend is not staleness');
+// nothing at all
+const empty = FETCH.healthCheck({ symbols: [], macro: { errors: [] } }, [], 11, NOW);
+assert(!empty.ok && empty.problems.some((p) => p.includes('どの銘柄も')), JSON.stringify(empty));
+// one symbol lagging the rest is surfaced but does not fail the run
+const lag = mkIndex('2026-09-18'); lag.symbols[3].lastDate = '2026-09-11';
+const lagged = FETCH.healthCheck(lag, [], 11, NOW);
+assert(lagged.ok && lagged.warnings.some((w) => w.includes('S3(2026-09-11)')), JSON.stringify(lagged));
+// macro errors are reported, never fatal
+const mac = FETCH.healthCheck(Object.assign(mkIndex('2026-09-18'), { macro: { errors: ['VIX HTTP 503'] } }), [], 11, NOW);
+assert(mac.ok && mac.warnings.some((w) => w.includes('VIX HTTP 503')));
 
 console.log('ALL TESTS PASSED');

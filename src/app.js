@@ -110,7 +110,7 @@ function mockFetch(path, p) {
 }
 
 // ---------- state ----------
-const state = { mode: 'api', repoIndex: null, tv: { datasets: {}, snapshots: [], overlays: new Set() }, sym: null, data: {}, bench: null, tf: 'day', log: true, ind: 'none', sort: { k: 'symbol', dir: 1 }, ma: [true, true, true], rs: true, bb: false, zone: true, peb: false, bz: false, brWidth: +(LS.get('msc:brWidth', 1)) || 1 };
+const state = { mode: 'api', repoIndex: null, healthMsg: null, tv: { datasets: {}, snapshots: [], overlays: new Set() }, sym: null, data: {}, bench: null, tf: 'day', log: true, ind: 'none', sort: { k: 'symbol', dir: 1 }, ma: [true, true, true], rs: true, bb: false, zone: true, peb: false, bz: false, brWidth: +(LS.get('msc:brWidth', 1)) || 1 };
 // data[sym] = {bars, meta, quote, stats, earnings, fundErr, summary, rsRaw, ad, eps, base, pivot}
 
 function fmt(n, d = 2) { return n == null || isNaN(n) ? '—' : Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }); }
@@ -285,10 +285,16 @@ async function boot(force = false) {
   if (state.mode === 'repo') {
     const ix = state.repoIndex; settings.bench = ix.bench || settings.bench;
     settings.symbols = ix.symbols.map((s) => s.symbol).filter((s) => s !== ix.bench);
-    renderMacro(ix); updateStatus(`データ更新: ${new Date(ix.updatedAt).toLocaleString('ja-JP')}${ix.mock ? '（モック）' : ''}`);
+    renderMacro(ix);
+    const ageH = (Date.now() - Date.parse(ix.updatedAt)) / 3600e3;
+    const stale = ageH > 96; // a long weekend is fine; beyond that the daily job has stopped
+    updateStatus(`データ更新: ${new Date(ix.updatedAt).toLocaleString('ja-JP')}${ix.mock ? '（モック）' : ''}${stale ? ` ⚠ ${Math.floor(ageH / 24)}日前` : ''}`);
+    const hp = (ix.health && ix.health.problems) || [];
+    if (hp.length || stale) state.healthMsg = 'データ取得に問題があります: ' + [...hp, stale ? `最終更新から${Math.floor(ageH / 24)}日経過（自動更新が止まっている可能性）` : ''].filter(Boolean).join(' / ');
+    else state.healthMsg = null;
     $('footData').textContent = 'データ: Stooq/Yahoo（株価）・SEC EDGAR（財務/8-K/Form 4）・FRED・Cboe — GitHub Actionsで日次更新';
   } else if (!settings.apiKey) { openSettings(); return; }
-  showErr(null);
+  showErr(state.healthMsg || null); // a stale/broken feed must stay visible, not be cleared on boot
   const first = state.sym || settings.symbols[0];
   state.sym = first;
   await Promise.all([ensureBench(force), loadSymbol(first, force, 10)]);

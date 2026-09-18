@@ -33,15 +33,16 @@ function peBand(bars, ttm, years = 5, opt = {}) {
   const caveats = [];
   if (exNeg) caveats.push(`赤字期 ${exNeg}営業日を除外`);
   if (exTrough) caveats.push(`減益期（TTM EPSが中央値の${Math.round(minRatio * 100)}%未満）${exTrough}営業日を除外`);
-  // A spread this wide after the trough filter usually means the EPS series is still mixing
-  // pre- and post-split figures — surface it rather than presenting a band that looks precise.
+  // A spread this wide after the trough filter means the band is not a usable price reference.
+  // Report the measured cause (how far the earnings themselves swung) rather than guessing at one.
   const spread = P.p10 > 0 ? P.p90 / P.p10 : Infinity;
   const suspect = spread > 10;
-  if (suspect) caveats.push(`PER分布の幅が異常（10%点の${spread.toFixed(0)}倍）— 株式分割の調整もれの可能性があり、この帯は信頼できません`);
+  const eLo = Math.min(...used.map((r) => r.e)), eHi = Math.max(...used.map((r) => r.e));
+  if (suspect) caveats.push(`PER分布の幅が広すぎます（90%点は10%点の${spread.toFixed(0)}倍）— この期間のTTM EPSが ${eLo.toFixed(2)}〜${eHi.toFixed(2)} と${(eHi / eLo).toFixed(0)}倍振れたためで、この帯は価格の目安になりません`);
   return { ttmEps: curTtm.ttm, ttmEnd: curTtm.end, curPe: +curPe.toFixed(2), percentile: +(rank * 100).toFixed(0),
     pe: Object.fromEntries(Object.entries(P).map(([k, v]) => [k, +v.toFixed(2)])), band,
     samples: used.length, windowDays: rows.length, excludedNegative: exNeg, excludedTrough: exTrough, spread: +spread.toFixed(1), suspect,
-    caveat: caveats.join(' / '), years, series: used.filter((_, i) => i % 5 === 0).map((r) => ({ t: r.t, pe: +(r.c / r.e).toFixed(2) })) };
+    caveat: caveats.join(' / '), ttmLow: +eLo.toFixed(3), ttmHigh: +eHi.toFixed(3), years, series: used.filter((_, i) => i % 5 === 0).map((r) => ({ t: r.t, pe: +(r.c / r.e).toFixed(2) })) };
 }
 
 // ---- Drawdown episodes from running max ----
